@@ -1,0 +1,29 @@
+# Core dependencies for Nepali News Summarizer
+# Web scraping and HTTP requests
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+loguru>=0.7.0
+urllib3>=2.0.0
+playwright>=1.40.0
+
+# LLM API integration
+httpx>=0.25.0
+tenacity>=8.2.0
+python-dotenv>=1.0.0
+
+# Image processing for post generation
+Pillow>=10.0.0
+
+# Timezone handling for Google Drive uploads
+pytz>=2023.3
+
+# Social media API integration
+requests>=2.31.0
+
+# Development dependencies
+pytest>=7.4.0
+pytest-mock>=3.11.0
+httpx[testing]>=0.25.0
+
+# Note: After installing playwright, run 'playwright install' to download browsers

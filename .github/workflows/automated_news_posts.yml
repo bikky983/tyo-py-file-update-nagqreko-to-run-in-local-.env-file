@@ -1,0 +1,183 @@
+name: Automated Nepali News Posts
+
+on:
+  schedule:
+    # Run at 10:30 AM Nepal Time (04:45 UTC) - Morning news (5:30 AM - 10:30 AM)
+    - cron: '45 4 * * *'
+    # Run at 3:30 PM Nepal Time (09:45 UTC) - Afternoon news (11:00 AM - 3:30 PM)
+    - cron: '45 9 * * *'
+    # Run at 8:30 PM Nepal Time (14:45 UTC) - Evening news (3:30 PM - 8:30 PM)
+    - cron: '45 14 * * *'
+  
+  workflow_dispatch:  # Allow manual trigger for testing
+    inputs:
+      time_slot:
+        description: 'Time slot to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - morning
+          - afternoon
+          - evening
+          - all
+
+env:
+  DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+  DEEPSEEK_API_URL: https://openrouter.ai/api/v1/chat/completions
+  DEEPSEEK_MODEL: deepseek/deepseek-chat
+  RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
+  # Social Media API Keys
+  FACEBOOK_ACCESS_TOKEN: ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
+  FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
+  INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+  INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+
+jobs:
+  generate-news-posts:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Install Playwright browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+      
+      - name: Install Rclone
+        run: |
+          curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip
+          unzip rclone-current-linux-amd64.zip
+          sudo cp rclone-*-linux-amd64/rclone /usr/bin/
+          sudo chown root:root /usr/bin/rclone
+          sudo chmod 755 /usr/bin/rclone
+          rclone version
+      
+      - name: Determine time slot
+        id: timeslot
+        run: |
+          HOUR=$(TZ='Asia/Kathmandu' date +%H)
+          if [ "$HOUR" -ge 4 ] && [ "$HOUR" -lt 11 ]; then
+            echo "slot=morning" >> $GITHUB_OUTPUT
+            echo "time_range=5:30 AM - 10:30 AM" >> $GITHUB_OUTPUT
+          elif [ "$HOUR" -ge 11 ] && [ "$HOUR" -lt 16 ]; then
+            echo "slot=afternoon" >> $GITHUB_OUTPUT
+            echo "time_range=11:00 AM - 3:30 PM" >> $GITHUB_OUTPUT
+          else
+            echo "slot=evening" >> $GITHUB_OUTPUT
+            echo "time_range=3:30 PM - 8:30 PM" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Run news scraping and summarization
+        run: |
+          echo "🔍 Scraping ${{ steps.timeslot.outputs.time_range }} news..."
+          python main.py
+        env:
+          PYTHONUNBUFFERED: 1
+      
+      - name: Generate social media posts
+        run: |
+          echo "🎨 Generating social media posts..."
+          python -m src.generate_posts_playwright --force
+        env:
+          PYTHONUNBUFFERED: 1
+      
+      - name: Validate Social Media Tokens
+        run: |
+          echo "🔍 Validating Facebook and Instagram tokens..."
+          python scripts/token_manager.py
+        env:
+          PYTHONUNBUFFERED: 1
+        continue-on-error: true
+      
+      - name: Post to Social Media
+        run: |
+          echo "📱 Posting to Facebook and Instagram..."
+          python scripts/post_to_social.py
+        env:
+          PYTHONUNBUFFERED: 1
+      
+      - name: Upload to Google Drive
+        run: |
+          echo "📤 Uploading images to Google Drive..."
+          python scripts/upload_to_gdrive.py
+        env:
+          PYTHONUNBUFFERED: 1
+      
+      - name: Get current timestamp
+        id: timestamp
+        run: |
+          echo "datetime=$(TZ='Asia/Kathmandu' date +'%Y-%m-%d_%H-%M')" >> $GITHUB_OUTPUT
+          echo "readable=$(TZ='Asia/Kathmandu' date +'%Y-%m-%d %I:%M %p NPT')" >> $GITHUB_OUTPUT
+      
+      - name: Upload generated posts
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-posts-${{ steps.timeslot.outputs.slot }}-${{ steps.timestamp.outputs.datetime }}
+          path: |
+            output/*.png
+            multi_source_summaries.json
+            multi_source_articles.json
+            multi_source_links.json
+          retention-days: 30
+      
+      - name: Commit and push generated files (optional)
+        if: github.event_name == 'schedule'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Create timestamped directory for this run
+          mkdir -p archives/${{ steps.timeslot.outputs.slot }}/${{ steps.timestamp.outputs.datetime }}
+          
+          # Copy generated files
+          cp output/*.png archives/${{ steps.timeslot.outputs.slot }}/${{ steps.timestamp.outputs.datetime }}/ || true
+          cp multi_source_summaries.json archives/${{ steps.timeslot.outputs.slot }}/${{ steps.timestamp.outputs.datetime }}/ || true
+          
+          # Add and commit
+          git add archives/
+          git commit -m "📰 Auto-generated news posts - ${{ steps.timeslot.outputs.slot }} (${{ steps.timestamp.outputs.readable }})" || echo "No changes to commit"
+          git push || echo "Nothing to push"
+      
+      - name: Create summary
+        run: |
+          echo "## 📰 Automated Nepali News Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time Slot**: ${{ steps.timeslot.outputs.slot }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time Range**: ${{ steps.timeslot.outputs.time_range }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Generated At**: ${{ steps.timestamp.outputs.readable }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f multi_source_summaries.json ]; then
+            ARTICLE_COUNT=$(python -c "import json; print(len(json.load(open('multi_source_summaries.json'))))")
+            echo "- **Articles Processed**: $ARTICLE_COUNT" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -d output ]; then
+            POST_COUNT=$(ls -1 output/*.png 2>/dev/null | wc -l)
+            echo "- **Posts Generated**: $POST_COUNT" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Automation Steps Completed:" >> $GITHUB_STEP_SUMMARY
+          echo "1. ✅ **News Scraping** - Multi-source article collection" >> $GITHUB_STEP_SUMMARY
+          echo "2. ✅ **Content Extraction** - Clean Nepali text extraction" >> $GITHUB_STEP_SUMMARY
+          echo "3. ✅ **AI Summarization** - DeepSeek LLM processing" >> $GITHUB_STEP_SUMMARY
+          echo "4. ✅ **Post Generation** - Beautiful social media images" >> $GITHUB_STEP_SUMMARY
+          echo "5. ✅ **Social Media Posting** - Facebook & Instagram" >> $GITHUB_STEP_SUMMARY
+          echo "6. ✅ **Google Drive Upload** - Organized cloud storage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🎉 **Status**: Complete Automation Success!" >> $GITHUB_STEP_SUMMARY
